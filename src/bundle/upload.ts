@@ -33,6 +33,61 @@ function uploadFail(message: string): never {
   throw new Error(message)
 }
 
+function normalizeAndValidateS3Options(options: OptionsUpload): void {
+  const optionsWithAlias = options as OptionsUpload & { s3Ssl?: boolean, s3Port?: number | string }
+
+  // Commander maps --no-s3-ssl to camelCase "s3Ssl"; keep legacy "s3SSL" too.
+  if (typeof options.s3SSL === 'undefined' && typeof optionsWithAlias.s3Ssl === 'boolean') {
+    options.s3SSL = optionsWithAlias.s3Ssl
+  }
+
+  if (typeof optionsWithAlias.s3Port === 'string') {
+    const parsedPort = Number.parseInt(optionsWithAlias.s3Port, 10)
+    if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) {
+      uploadFail(`Invalid S3 port "${optionsWithAlias.s3Port}". It must be an integer between 1 and 65535.`)
+    }
+    options.s3Port = parsedPort
+  }
+  else if (typeof optionsWithAlias.s3Port === 'number') {
+    if (!Number.isInteger(optionsWithAlias.s3Port) || optionsWithAlias.s3Port <= 0 || optionsWithAlias.s3Port > 65535) {
+      uploadFail(`Invalid S3 port "${optionsWithAlias.s3Port}". It must be an integer between 1 and 65535.`)
+    }
+    options.s3Port = optionsWithAlias.s3Port
+  }
+}
+
+function hasS3UploadConfig(options: OptionsUpload): boolean {
+  return Boolean(
+    options.s3Region
+    || options.s3Apikey
+    || options.s3Apisecret
+    || options.s3BucketName
+    || options.s3Endpoint
+    || typeof options.s3Port === 'number',
+  )
+}
+
+function buildS3EndpointUrl(endpoint: string, useSSL: boolean, port?: number): string {
+  const endpointWithProtocol = /^https?:\/\//i.test(endpoint)
+    ? endpoint
+    : `${useSSL ? 'https' : 'http'}://${endpoint}`
+
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(endpointWithProtocol)
+  }
+  catch {
+    uploadFail(`Invalid S3 endpoint "${endpoint}". Provide host[:port] or a full http(s) URL.`)
+  }
+
+  if (typeof port === 'number') {
+    parsedUrl.port = String(port)
+  }
+
+  // S3 client accepts full URL; remove trailing slash for cleaner logs/URLs.
+  return parsedUrl.toString().replace(/\/$/, '')
+}
+
 /**
  * Display a compatibility table for the given packages
  */
@@ -693,6 +748,7 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
   let sessionKey: Buffer | undefined
   const pm = getPMAndCommand()
   await checkAlerts()
+  normalizeAndValidateS3Options(options)
 
   const { s3Region, s3Apikey, s3Apisecret, s3BucketName, s3Endpoint, s3Port, s3SSL } = options
 
@@ -762,7 +818,11 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
   if (options.verbose)
     log.info(`[Verbose] Bundle version: ${bundle}`)
 
-  const defaultStorageProvider: Exclude<UploadBundleResult['storageProvider'], undefined> = options.external ? 'external' : 'r2-direct'
+  const defaultStorageProvider: Exclude<UploadBundleResult['storageProvider'], undefined> = options.external || hasS3UploadConfig(options) ? 'external' : 'r2-direct'
+
+  if (options.verbose)
+    log.info(`[Verbose] Storage provider ${defaultStorageProvider}`)
+
   let encryptionMethod: UploadBundleResult['encryptionMethod'] = 'none'
 
   if (options.autoSetBundle) {
@@ -1049,9 +1109,11 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
   if (options.verbose)
     log.info(`[Verbose] TUS chunk size: ${Math.floor(options.tusChunkSize / 1024 / 1024)} MB`)
 
-  if (zipped && (s3BucketName || s3Endpoint || s3Region || s3Apikey || s3Apisecret || s3Port || s3SSL)) {
-    if (!s3BucketName || !s3Endpoint || !s3Region || !s3Apikey || !s3Apisecret || !s3Port)
-      uploadFail('Missing argument, for S3 upload you need to provide a bucket name, endpoint, region, port, API key, and API secret')
+  if (zipped && hasS3UploadConfig(options)) {
+    if (!s3BucketName || !s3Endpoint || !s3Region || !s3Apikey || !s3Apisecret)
+      uploadFail('Missing argument, for S3 upload you need to provide a bucket name, endpoint, region, API key, and API secret. Port is optional.')
+
+    const useSSL = s3SSL ?? true
 
     log.info('Uploading to S3')
     if (options.verbose) {
@@ -1060,14 +1122,13 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
       log.info(`  - Region: ${s3Region}`)
       log.info(`  - Bucket: ${s3BucketName}`)
       log.info(`  - Port: ${s3Port}`)
-      log.info(`  - SSL: ${s3SSL ? 'enabled' : 'disabled'}`)
+      log.info(`  - SSL: ${useSSL ? 'enabled' : 'disabled'}`)
     }
 
-    const endPoint = s3SSL ? `https://${s3Endpoint}` : `http://${s3Endpoint}`
+    const endpointUrl = buildS3EndpointUrl(s3Endpoint, useSSL, s3Port)
     const s3Client = new S3Client({
-      endPoint: s3Endpoint,
+      endPoint: endpointUrl,
       region: s3Region,
-      port: s3Port,
       pathStyle: true,
       bucket: s3BucketName,
       accessKey: s3Apikey,
@@ -1080,8 +1141,12 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
       log.info(`[Verbose] Uploading to S3 as: ${fileName}`)
 
     await s3Client.putObject(fileName, Uint8Array.from(zipped))
-    versionData.external_url = `${endPoint}/${encodeFileName}`
+    versionData.external_url = new URL(`${encodeURIComponent(s3BucketName)}/${encodeFileName}`, `${endpointUrl}/`).toString()
     versionData.storage_provider = 'external'
+
+    const { error: dbErrorS3 } = await updateOrCreateVersion(supabase, versionData)
+    if (dbErrorS3)
+      uploadFail(`Cannot update S3 bundle metadata ${formatError(dbErrorS3)}`)
 
     if (options.verbose)
       log.info(`[Verbose] S3 upload complete, external URL: ${versionData.external_url}`)
@@ -1246,6 +1311,7 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
 }
 
 function checkValidOptions(options: OptionsUpload) {
+  normalizeAndValidateS3Options(options)
   const noKey = options.key === false
   const forceCrc32 = options.forceCrc32Checksum === true
   const hasEncryptionKey = (options.keyV2 || options.keyDataV2 || existsSync(baseKeyV2))
@@ -1277,7 +1343,7 @@ function checkValidOptions(options: OptionsUpload) {
     uploadFail('You cannot set both key-v2 and key-data-v2')
   }
   // cannot set s3 and external
-  if (options.external && (options.s3Region || options.s3Apikey || options.s3Apisecret || options.s3Endpoint || options.s3BucketName || options.s3Port || options.s3SSL)) {
+  if (options.external && hasS3UploadConfig(options)) {
     uploadFail('You cannot set S3 options if you are uploading to an external url, it\'s automatically handled')
   }
   // cannot set --encrypted-checksum if not external
