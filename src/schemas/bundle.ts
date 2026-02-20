@@ -19,7 +19,7 @@ export const optionsUploadSchema = optionsBaseSchema.extend({
   s3Apikey: z.string().optional(),
   s3Apisecret: z.string().optional(),
   s3BucketName: z.string().optional(),
-  s3Port: z.number().optional(),
+  s3Port: z.coerce.number().int().min(1).max(65535).optional(),
   s3SSL: z.boolean().optional(),
   s3Endpoint: z.string().optional(),
   bundleUrl: z.boolean().optional(),

@@ -114,7 +114,13 @@ Example: npx @capgo/cli@latest bundle upload com.example.app --path ./dist --cha
   .option('--s3-apisecret <apisecret>', `API secret for your S3 endpoint`)
   .option('--s3-endpoint <s3Endpoint>', `URL of S3 endpoint`)
   .option('--s3-bucket-name <bucketName>', `Name for your AWS S3 bucket`)
-  .option('--s3-port <port>', `Port for your S3 endpoint`)
+  .option('--s3-port <port>', `Port for your S3 endpoint`, (value: string) => {
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+      throw new Error(`Invalid value for --s3-port: ${value}. Expected an integer between 1 and 65535.`)
+    }
+    return parsed
+  })
   .option('--no-s3-ssl', `Disable SSL for S3 upload`)
   .option('--key-v2 <key>', `Custom path for private signing key (v2 system)`)
   .option('--key-data-v2  <keyDataV2>', `Private signing key (v2 system)`)
