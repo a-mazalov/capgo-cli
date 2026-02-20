@@ -1,7 +1,7 @@
 {
-  "name": "@capgo/cli",
+  "name": "@mazalov-capgo/cli",
   "type": "module",
-  "version": "7.75.0",
+  "version": "7.75.1",
   "description": "A CLI to upload to capgo servers",
   "author": "Martin martin@capgo.app",
   "license": "Apache 2.0",
@@ -95,11 +95,11 @@
     "is-wsl": "^3.1.0",
     "micromatch": "^4.0.8",
     "open": "^11.0.0",
+    "partysocket": "^1.1.11",
     "prettyjson": "^1.2.5",
     "tmp": "^0.2.5",
     "tus-js-client": "^4.3.1",
     "typescript": "^5.9.3",
-    "partysocket": "^1.1.11",
     "ws": "^8.18.3",
     "zod": "^4.3.6"
   }
