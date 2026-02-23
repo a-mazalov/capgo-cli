@@ -1134,7 +1134,7 @@ export async function uploadBundleInternal(preAppid: string, options: OptionsUpl
       accessKey: s3Apikey,
       secretKey: s3Apisecret,
     })
-    const fileName = `${appid}-${bundle}`
+    const fileName = `${appid}-${bundle}.zip`
     const encodeFileName = encodeURIComponent(fileName)
 
     if (options.verbose)
